@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/hoxca/mireille/internal/fitsheader"
@@ -19,6 +20,9 @@ import (
 // tempKeyword is the FITS card that records the sensor temperature.
 const tempKeyword = "CCD-TEMP"
 
+// gainKeyword is the FITS card that records the sensor gain.
+const gainKeyword = "GAIN"
+
 // epsilon absorbs rounding in the header so that a -15.0 card matches a -15
 // target at zero tolerance.
 const epsilon = 1e-3
@@ -27,6 +31,9 @@ type checkOptions struct {
 	dir       string
 	temp      float64
 	tolerance float64
+	gain      float64
+	// gainSet reports whether --gain was supplied. Gain is checked only then.
+	gainSet bool
 }
 
 func newCheckCmd() *cobra.Command {
@@ -39,12 +46,17 @@ func newCheckCmd() *cobra.Command {
 --temp. Files whose recorded temperature differs by more than --tolerance are
 rejected. A file without a CCD-TEMP card is rejected and marked as missing.
 
+When --gain is given, the GAIN card is checked too and must equal the flag
+exactly; there is no tolerance for the gain. A file without a GAIN card is
+rejected and marked as missing.
+
 Only .fits, .fit and .fts files are considered; every other file and every
 hidden file is ignored. The report counts the compliant and rejected files and
 lists the rejected ones. The exit status is non-zero when any file is rejected
 or unreadable.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			opts.gainSet = cmd.Flags().Changed("gain")
 			if err := opts.validate(); err != nil {
 				return err
 			}
@@ -59,6 +71,8 @@ or unreadable.`,
 		"compliant sensor temperature in degrees Celsius")
 	flags.Float64Var(&opts.tolerance, "tolerance", 0,
 		"allowed absolute deviation from --temp in degrees Celsius")
+	flags.Float64Var(&opts.gain, "gain", 0,
+		"compliant gain from the GAIN card; checked only when given")
 	_ = cmd.MarkFlagRequired("dir")
 	_ = cmd.MarkFlagRequired("temp")
 	return cmd
@@ -81,14 +95,16 @@ func (o *checkOptions) validate() error {
 	if math.IsNaN(o.tolerance) || o.tolerance < 0 {
 		return fmt.Errorf("--tolerance must not be negative, got %v", o.tolerance)
 	}
+	if o.gainSet && (math.IsNaN(o.gain) || math.IsInf(o.gain, 0)) {
+		return fmt.Errorf("--gain must be a finite number, got %v", o.gain)
+	}
 	return nil
 }
 
-// checkResult is one rejected file.
+// checkResult is one rejected file, with one entry per failed check.
 type checkResult struct {
-	path   string
-	temp   float64
-	reason string
+	path     string
+	problems []string
 }
 
 // fileError is a FITS file that could not be read.
@@ -113,22 +129,18 @@ func runCheck(ctx context.Context, out io.Writer, opts *checkOptions) error {
 			return err
 		}
 
-		temp, found, err := fitsheader.ReadFloat(path, tempKeyword)
+		problems, err := opts.fileProblems(path)
 		if err != nil {
 			slog.Debug("unable to read header", "path", path, "err", err)
 			errs = append(errs, fileError{path: path, err: err})
 			continue
 		}
-		if !found {
-			rejected = append(rejected, checkResult{path: path, reason: tempKeyword + " missing"})
-			continue
-		}
-		if math.Abs(temp-opts.temp) <= opts.tolerance+epsilon {
+		if len(problems) == 0 {
 			compliant++
-			slog.Debug("compliant", "path", path, "temp", temp)
+			slog.Debug("compliant", "path", path)
 			continue
 		}
-		rejected = append(rejected, checkResult{path: path, temp: temp})
+		rejected = append(rejected, checkResult{path: path, problems: problems})
 	}
 
 	if err := printReport(out, opts, compliant, rejected, errs); err != nil {
@@ -139,6 +151,43 @@ func runCheck(ctx context.Context, out io.Writer, opts *checkOptions) error {
 		return errRejected
 	}
 	return nil
+}
+
+// fileProblems reports every enabled check the file fails. A read error is
+// returned as-is so the caller can list the file separately.
+func (o *checkOptions) fileProblems(path string) ([]string, error) {
+	var problems []string
+
+	temp, found, err := fitsheader.ReadFloat(path, tempKeyword)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		problems = append(problems, tempKeyword+" missing")
+	} else if math.Abs(temp-o.temp) > o.tolerance+epsilon {
+		msg := fmt.Sprintf("%s=%s (want %s", tempKeyword, formatTemp(temp), formatTemp(o.temp))
+		if o.tolerance > 0 {
+			msg += fmt.Sprintf(", tol %s", formatTemp(o.tolerance))
+		}
+		problems = append(problems, msg+")")
+	}
+
+	if !o.gainSet {
+		return problems, nil
+	}
+
+	gain, found, err := fitsheader.ReadFloat(path, gainKeyword)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		problems = append(problems, gainKeyword+" missing")
+	} else if gain != o.gain {
+		problems = append(problems,
+			fmt.Sprintf("%s=%s (want %s)", gainKeyword, formatGain(gain), formatGain(o.gain)))
+	}
+
+	return problems, nil
 }
 
 // reportWriter accumulates the first write error so the report can be built
@@ -168,16 +217,7 @@ func printReport(out io.Writer, opts *checkOptions, compliant int, rejected []ch
 	if len(rejected) > 0 {
 		rw.println("\nrejected:")
 		for _, r := range rejected {
-			if r.reason != "" {
-				rw.printf("  %s  %s\n", r.path, r.reason)
-				continue
-			}
-			rw.printf("  %s  %s=%s (want %s", r.path, tempKeyword,
-				formatTemp(r.temp), formatTemp(opts.temp))
-			if opts.tolerance > 0 {
-				rw.printf(", tol %s", formatTemp(opts.tolerance))
-			}
-			rw.println(")")
+			rw.printf("  %s  %s\n", r.path, strings.Join(r.problems, "; "))
 		}
 	}
 
@@ -193,6 +233,10 @@ func printReport(out io.Writer, opts *checkOptions, compliant int, rejected []ch
 
 func formatTemp(v float64) string {
 	return fmt.Sprintf("%.2f", v)
+}
+
+func formatGain(v float64) string {
+	return strconv.FormatFloat(v, 'g', -1, 64)
 }
 
 // collectFITS resolves root into a sorted list of FITS files. Directories are
