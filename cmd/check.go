@@ -86,6 +86,14 @@ and the source stays in place.`,
 		},
 	}
 
+	addCheckFlags(cmd, opts)
+	cmd.Flags().BoolVar(&opts.reject, "reject", false,
+		"move rejected files into <dir>/rejected")
+	return cmd
+}
+
+// addCheckFlags registers the flags shared by check and fix.
+func addCheckFlags(cmd *cobra.Command, opts *checkOptions) {
 	flags := cmd.Flags()
 	flags.StringVarP(&opts.dir, "dir", "d", "",
 		"directory to scan recursively for FITS files")
@@ -97,11 +105,8 @@ and the source stays in place.`,
 		"compliant non-negative integer gain from the GAIN card; checked only when given")
 	flags.IntVar(&opts.offset, "offset", 0,
 		"compliant non-negative integer offset from the OFFSET card; checked only when given")
-	flags.BoolVar(&opts.reject, "reject", false,
-		"move rejected files into <dir>/rejected")
 	_ = cmd.MarkFlagRequired("dir")
 	_ = cmd.MarkFlagRequired("temp")
-	return cmd
 }
 
 func (o *checkOptions) validate() error {
@@ -304,21 +309,32 @@ func printReport(out io.Writer, opts *checkOptions, compliant int, rejected []ch
 	rw.printf("compliant: %d\n", compliant)
 	rw.printf("rejected:  %d\n", len(rejected))
 
-	if len(rejected) > 0 {
-		rw.println("\nrejected:")
-		for _, r := range rejected {
-			rw.printf("  %s  %s\n", r.path, strings.Join(r.problems, "; "))
-		}
-	}
-
-	if len(errs) > 0 {
-		rw.println("\nerrors:")
-		for _, e := range errs {
-			rw.printf("  %s  %v\n", e.path, e.err)
-		}
-	}
+	printRejected(rw, rejected)
+	printErrors(rw, errs)
 
 	return rw.err
+}
+
+// printRejected lists the rejected files and their failed checks.
+func printRejected(rw *reportWriter, rejected []checkResult) {
+	if len(rejected) == 0 {
+		return
+	}
+	rw.println("\nrejected:")
+	for _, r := range rejected {
+		rw.printf("  %s  %s\n", r.path, strings.Join(r.problems, "; "))
+	}
+}
+
+// printErrors lists the files that could not be read or written.
+func printErrors(rw *reportWriter, errs []fileError) {
+	if len(errs) == 0 {
+		return
+	}
+	rw.println("\nerrors:")
+	for _, e := range errs {
+		rw.printf("  %s  %v\n", e.path, e.err)
+	}
 }
 
 func formatTemp(v float64) string {

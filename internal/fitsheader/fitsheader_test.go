@@ -134,6 +134,94 @@ func TestReadFloatMissingFile(t *testing.T) {
 	}
 }
 
+func TestWriteFloat(t *testing.T) {
+	path := writeFITS(t, []string{
+		"CCD-TEMP=                 0.05 / sensor temperature",
+		"EXPTIME =                 600.0",
+	}, true)
+
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	found, err := WriteFloat(path, "CCD-TEMP", 0)
+	if err != nil {
+		t.Fatalf("WriteFloat(): %v", err)
+	}
+	if !found {
+		t.Fatal("WriteFloat() found = false")
+	}
+
+	got, ok, err := ReadFloat(path, "CCD-TEMP")
+	if err != nil {
+		t.Fatalf("ReadFloat(): %v", err)
+	}
+	if !ok || got != 0 {
+		t.Fatalf("CCD-TEMP = %v, %v, want 0", got, ok)
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before) != len(after) {
+		t.Fatalf("file size changed from %d to %d", len(before), len(after))
+	}
+
+	// SIMPLE is card 0, CCD-TEMP card 1.
+	beforeCard := before[cardSize : 2*cardSize]
+	afterCard := after[cardSize : 2*cardSize]
+	if string(beforeCard[30:]) != string(afterCard[30:]) {
+		t.Errorf("comment/padding changed: %q -> %q", beforeCard[30:], afterCard[30:])
+	}
+	if string(afterCard[10:30]) != "                   0" {
+		t.Errorf("value field = %q, want right-justified 0", afterCard[10:30])
+	}
+
+	// Other cards are untouched.
+	exp, ok, err := ReadFloat(path, "EXPTIME")
+	if err != nil || !ok || exp != 600 {
+		t.Fatalf("EXPTIME = %v, %v, %v, want 600", exp, ok, err)
+	}
+}
+
+func TestWriteFloatBeyondFirstBlock(t *testing.T) {
+	cards := append(repeatCard("HISTORY ", 40), "CCD-TEMP=                 0.05")
+	path := writeFITS(t, cards, true)
+
+	found, err := WriteFloat(path, "CCD-TEMP", -15)
+	if err != nil || !found {
+		t.Fatalf("WriteFloat() = %v, %v", found, err)
+	}
+	got, ok, err := ReadFloat(path, "CCD-TEMP")
+	if err != nil || !ok || got != -15 {
+		t.Fatalf("CCD-TEMP = %v, %v, %v, want -15", got, ok, err)
+	}
+}
+
+func TestWriteFloatMissing(t *testing.T) {
+	path := writeFITS(t, []string{"EXPTIME =                 600.0"}, true)
+	found, err := WriteFloat(path, "CCD-TEMP", 0)
+	if err != nil {
+		t.Fatalf("WriteFloat(): %v", err)
+	}
+	if found {
+		t.Fatal("WriteFloat() found = true for a missing card")
+	}
+}
+
+func TestWriteFloatTooLong(t *testing.T) {
+	path := writeFITS(t, []string{"CCD-TEMP=                 0.05"}, true)
+	if _, err := WriteFloat(path, "CCD-TEMP", 1e30); err == nil {
+		t.Fatal("WriteFloat() = nil error, want a value-field overflow error")
+	}
+	got, ok, err := ReadFloat(path, "CCD-TEMP")
+	if err != nil || !ok || got != 0.05 {
+		t.Fatalf("CCD-TEMP = %v, %v, %v, want unchanged 0.05", got, ok, err)
+	}
+}
+
 func TestReadInt(t *testing.T) {
 	tests := []struct {
 		name    string

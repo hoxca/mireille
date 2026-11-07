@@ -83,6 +83,71 @@ func readCard(r io.Reader, keyword string) (string, bool, error) {
 	}
 }
 
+// WriteFloat rewrites the value of the first card named keyword in the primary
+// header of the FITS file at path. Only that 80-byte card is overwritten; the
+// keyword, the comment and any pixel data are left untouched. found is false
+// when the header has no such card.
+func WriteFloat(path, keyword string, value float64) (found bool, err error) {
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = f.Close() }()
+
+	var card [cardSize]byte
+	var offset int64
+	for {
+		if _, err := io.ReadFull(f, card[:]); err != nil {
+			if err == io.EOF || err == io.ErrUnexpectedEOF {
+				return false, fmt.Errorf("header ends before the END card")
+			}
+			return false, err
+		}
+
+		name := strings.TrimSpace(string(card[:8]))
+		if name == "END" {
+			return false, nil
+		}
+		if !strings.EqualFold(name, keyword) {
+			offset += cardSize
+			continue
+		}
+
+		updated, err := rewriteCard(card[:], value)
+		if err != nil {
+			return true, fmt.Errorf("%s: %w", keyword, err)
+		}
+		if _, err := f.WriteAt(updated, offset); err != nil {
+			return true, err
+		}
+		return true, nil
+	}
+}
+
+// rewriteCard returns card with its value field replaced by value, keeping the
+// keyword, comment and padding in place. The value is right-justified in the
+// 20-byte FITS value field.
+func rewriteCard(card []byte, value float64) ([]byte, error) {
+	if card[8] != '=' {
+		return nil, fmt.Errorf("card has no value")
+	}
+
+	s := strconv.FormatFloat(value, 'f', -1, 64)
+	if len(s) > 20 {
+		return nil, fmt.Errorf("%q does not fit the value field", s)
+	}
+
+	out := make([]byte, cardSize)
+	copy(out, card)
+
+	for i := 10; i < 30; i++ {
+		out[i] = ' '
+	}
+	copy(out[30-len(s):30], s)
+
+	return out, nil
+}
+
 // cardValue extracts the value field of a card with the "= " indicator,
 // dropping the trailing comment and normalising FITS D exponents.
 func cardValue(card []byte) (string, error) {

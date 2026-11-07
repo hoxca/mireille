@@ -63,6 +63,7 @@ exit status is non-zero when any file is rejected.`,
 	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "log debugging detail")
 
 	root.AddCommand(newCheckCmd())
+	root.AddCommand(newFixCmd())
 	return root
 }
 
