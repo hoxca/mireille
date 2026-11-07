@@ -161,7 +161,7 @@ func TestCheckGain(t *testing.T) {
 	tests := []struct {
 		name         string
 		cards        []string
-		gain         float64
+		gain         int
 		gainSet      bool
 		wantRejected bool
 		want         []string
@@ -170,6 +170,12 @@ func TestCheckGain(t *testing.T) {
 			name:    "matching gain",
 			cards:   []string{"CCD-TEMP=                -15.0", "GAIN    =                  100"},
 			gain:    100,
+			gainSet: true,
+		},
+		{
+			name:    "zero gain matches",
+			cards:   []string{"CCD-TEMP=                -15.0", "GAIN    =                    0"},
+			gain:    0,
 			gainSet: true,
 		},
 		{
@@ -270,9 +276,9 @@ func TestCheckOffset(t *testing.T) {
 	tests := []struct {
 		name         string
 		cards        []string
-		gain         float64
+		gain         int
 		gainSet      bool
-		offset       float64
+		offset       int
 		offsetSet    bool
 		wantRejected bool
 		want         []string
@@ -281,6 +287,12 @@ func TestCheckOffset(t *testing.T) {
 			name:      "matching offset",
 			cards:     []string{"CCD-TEMP=                -15.0", "OFFSET  =                   30"},
 			offset:    30,
+			offsetSet: true,
+		},
+		{
+			name:      "zero offset matches",
+			cards:     []string{"CCD-TEMP=                -15.0", "OFFSET  =                    0"},
+			offset:    0,
 			offsetSet: true,
 		},
 		{
@@ -423,9 +435,13 @@ func TestCheckValidate(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "valid", opts: checkOptions{dir: dir, temp: -15}},
+		{name: "zero gain and offset", opts: checkOptions{dir: dir, temp: -15, gainSet: true, offsetSet: true}},
+		{name: "valid gain and offset", opts: checkOptions{dir: dir, temp: -15, gain: 100, gainSet: true, offset: 30, offsetSet: true}},
 		{name: "negative tolerance", opts: checkOptions{dir: dir, temp: -15, tolerance: -1}, wantErr: true},
 		{name: "missing dir", opts: checkOptions{temp: -15}, wantErr: true},
 		{name: "not a directory", opts: checkOptions{dir: file, temp: -15}, wantErr: true},
+		{name: "negative gain", opts: checkOptions{dir: dir, temp: -15, gain: -100, gainSet: true}, wantErr: true},
+		{name: "negative offset", opts: checkOptions{dir: dir, temp: -15, offset: -30, offsetSet: true}, wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -133,3 +133,79 @@ func TestReadFloatMissingFile(t *testing.T) {
 		t.Fatal("ReadFloat() = nil error, want an open error")
 	}
 }
+
+func TestReadInt(t *testing.T) {
+	tests := []struct {
+		name    string
+		keyword string
+		cards   []string
+		want    int
+		wantOk  bool
+		wantErr bool
+	}{
+		{
+			name:    "integer",
+			keyword: "GAIN",
+			cards:   []string{"GAIN    =                  100 / e-/ADU"},
+			want:    100,
+			wantOk:  true,
+		},
+		{
+			name:    "zero",
+			keyword: "OFFSET",
+			cards:   []string{"OFFSET  =                    0"},
+			wantOk:  true,
+		},
+		{
+			name:    "card beyond first block",
+			keyword: "OFFSET",
+			cards:   append(repeatCard("HISTORY ", 40), "OFFSET  =                   30"),
+			want:    30,
+			wantOk:  true,
+		},
+		{
+			name:    "missing",
+			keyword: "GAIN",
+			cards:   []string{"EXPTIME =                  600.0"},
+			wantOk:  false,
+		},
+		{
+			name:    "decimal value",
+			keyword: "GAIN",
+			cards:   []string{"GAIN    =                  100.5"},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeFITS(t, tt.cards, true)
+			got, ok, err := ReadInt(path, tt.keyword)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("ReadInt() = %v, %v, want error", got, ok)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ReadInt(): %v", err)
+			}
+			if ok != tt.wantOk {
+				t.Fatalf("found = %v, want %v", ok, tt.wantOk)
+			}
+			if ok && got != tt.want {
+				t.Fatalf("ReadInt() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// repeatCard returns n HISTORY cards, keeping the header under test away from
+// the first 2880-byte block.
+func repeatCard(prefix string, n int) []string {
+	cards := make([]string, n)
+	for i := range cards {
+		cards[i] = prefix + strings.Repeat("x", 70)
+	}
+	return cards
+}

@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/hoxca/mireille/internal/fitsheader"
@@ -34,10 +33,10 @@ type checkOptions struct {
 	dir       string
 	temp      float64
 	tolerance float64
-	gain      float64
+	gain      int
 	// gainSet reports whether --gain was supplied. Gain is checked only then.
 	gainSet bool
-	offset  float64
+	offset  int
 	// offsetSet reports whether --offset was supplied. Offset is checked only
 	// then.
 	offsetSet bool
@@ -54,12 +53,12 @@ func newCheckCmd() *cobra.Command {
 rejected. A file without a CCD-TEMP card is rejected and marked as missing.
 
 When --gain is given, the GAIN card is checked too and must equal the flag
-exactly; there is no tolerance for the gain. A file without a GAIN card is
-rejected and marked as missing.
+exactly; gain is a non-negative integer and there is no tolerance. A file
+without a GAIN card is rejected and marked as missing.
 
 When --offset is given, the OFFSET card is checked the same way: it must equal
-the flag exactly, and a file without an OFFSET card is rejected and marked as
-missing.
+the flag exactly, offset is a non-negative integer, and a file without an
+OFFSET card is rejected and marked as missing.
 
 Only .fits, .fit and .fts files are considered; every other file and every
 hidden file is ignored. The report counts the compliant and rejected files and
@@ -83,10 +82,10 @@ or unreadable.`,
 		"compliant sensor temperature in degrees Celsius")
 	flags.Float64Var(&opts.tolerance, "tolerance", 0,
 		"allowed absolute deviation from --temp in degrees Celsius")
-	flags.Float64Var(&opts.gain, "gain", 0,
-		"compliant gain from the GAIN card; checked only when given")
-	flags.Float64Var(&opts.offset, "offset", 0,
-		"compliant offset from the OFFSET card; checked only when given")
+	flags.IntVar(&opts.gain, "gain", 0,
+		"compliant non-negative integer gain from the GAIN card; checked only when given")
+	flags.IntVar(&opts.offset, "offset", 0,
+		"compliant non-negative integer offset from the OFFSET card; checked only when given")
 	_ = cmd.MarkFlagRequired("dir")
 	_ = cmd.MarkFlagRequired("temp")
 	return cmd
@@ -109,11 +108,11 @@ func (o *checkOptions) validate() error {
 	if math.IsNaN(o.tolerance) || o.tolerance < 0 {
 		return fmt.Errorf("--tolerance must not be negative, got %v", o.tolerance)
 	}
-	if o.gainSet && (math.IsNaN(o.gain) || math.IsInf(o.gain, 0)) {
-		return fmt.Errorf("--gain must be a finite number, got %v", o.gain)
+	if o.gainSet && o.gain < 0 {
+		return fmt.Errorf("--gain must be a non-negative integer, got %d", o.gain)
 	}
-	if o.offsetSet && (math.IsNaN(o.offset) || math.IsInf(o.offset, 0)) {
-		return fmt.Errorf("--offset must be a finite number, got %v", o.offset)
+	if o.offsetSet && o.offset < 0 {
+		return fmt.Errorf("--offset must be a non-negative integer, got %d", o.offset)
 	}
 	return nil
 }
@@ -190,7 +189,7 @@ func (o *checkOptions) fileProblems(path string) ([]string, error) {
 	}
 
 	if o.gainSet {
-		gain, found, err := fitsheader.ReadFloat(path, gainKeyword)
+		gain, found, err := fitsheader.ReadInt(path, gainKeyword)
 		if err != nil {
 			return nil, err
 		}
@@ -198,7 +197,7 @@ func (o *checkOptions) fileProblems(path string) ([]string, error) {
 			problems = append(problems, gainKeyword+" missing")
 		} else if gain != o.gain {
 			problems = append(problems,
-				fmt.Sprintf("%s=%s (want %s)", gainKeyword, formatFixed(gain), formatFixed(o.gain)))
+				fmt.Sprintf("%s=%d (want %d)", gainKeyword, gain, o.gain))
 		}
 	}
 
@@ -206,7 +205,7 @@ func (o *checkOptions) fileProblems(path string) ([]string, error) {
 		return problems, nil
 	}
 
-	offset, found, err := fitsheader.ReadFloat(path, offsetKeyword)
+	offset, found, err := fitsheader.ReadInt(path, offsetKeyword)
 	if err != nil {
 		return nil, err
 	}
@@ -214,7 +213,7 @@ func (o *checkOptions) fileProblems(path string) ([]string, error) {
 		problems = append(problems, offsetKeyword+" missing")
 	} else if offset != o.offset {
 		problems = append(problems,
-			fmt.Sprintf("%s=%s (want %s)", offsetKeyword, formatFixed(offset), formatFixed(o.offset)))
+			fmt.Sprintf("%s=%d (want %d)", offsetKeyword, offset, o.offset))
 	}
 
 	return problems, nil
@@ -263,10 +262,6 @@ func printReport(out io.Writer, opts *checkOptions, compliant int, rejected []ch
 
 func formatTemp(v float64) string {
 	return fmt.Sprintf("%.2f", v)
-}
-
-func formatFixed(v float64) string {
-	return strconv.FormatFloat(v, 'g', -1, 64)
 }
 
 // collectFITS resolves root into a sorted list of FITS files. Directories are

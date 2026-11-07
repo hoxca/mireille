@@ -18,28 +18,58 @@ const cardSize = 80
 // primary header of the FITS file at path. found is false when the header has
 // no such card.
 func ReadFloat(path, keyword string) (value float64, found bool, err error) {
+	raw, found, err := readValue(path, keyword)
+	if err != nil || !found {
+		return 0, found, err
+	}
+
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0, false, fmt.Errorf("%s: %q is not a number", keyword, raw)
+	}
+	return v, true, nil
+}
+
+// ReadInt returns the value of the first integer card named keyword in the
+// primary header of the FITS file at path. found is false when the header has
+// no such card.
+func ReadInt(path, keyword string) (value int, found bool, err error) {
+	raw, found, err := readValue(path, keyword)
+	if err != nil || !found {
+		return 0, found, err
+	}
+
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, false, fmt.Errorf("%s: %q is not an integer", keyword, raw)
+	}
+	return v, true, nil
+}
+
+// readValue returns the raw value field of the first card named keyword.
+func readValue(path, keyword string) (string, bool, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return 0, false, err
+		return "", false, err
 	}
 	defer func() { _ = f.Close() }()
 
-	return readFloat(bufio.NewReader(f), keyword)
+	return readCard(bufio.NewReader(f), keyword)
 }
 
-func readFloat(r io.Reader, keyword string) (float64, bool, error) {
+func readCard(r io.Reader, keyword string) (string, bool, error) {
 	var card [cardSize]byte
 	for {
 		if _, err := io.ReadFull(r, card[:]); err != nil {
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
-				return 0, false, fmt.Errorf("header ends before the END card")
+				return "", false, fmt.Errorf("header ends before the END card")
 			}
-			return 0, false, err
+			return "", false, err
 		}
 
 		name := strings.TrimSpace(string(card[:8]))
 		if name == "END" {
-			return 0, false, nil
+			return "", false, nil
 		}
 		if !strings.EqualFold(name, keyword) {
 			continue
@@ -47,13 +77,9 @@ func readFloat(r io.Reader, keyword string) (float64, bool, error) {
 
 		raw, err := cardValue(card[:])
 		if err != nil {
-			return 0, false, fmt.Errorf("%s: %w", keyword, err)
+			return "", false, fmt.Errorf("%s: %w", keyword, err)
 		}
-		v, err := strconv.ParseFloat(raw, 64)
-		if err != nil {
-			return 0, false, fmt.Errorf("%s: %q is not a number", keyword, raw)
-		}
-		return v, true, nil
+		return raw, true, nil
 	}
 }
 
