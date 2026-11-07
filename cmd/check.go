@@ -23,6 +23,9 @@ const tempKeyword = "CCD-TEMP"
 // gainKeyword is the FITS card that records the sensor gain.
 const gainKeyword = "GAIN"
 
+// offsetKeyword is the FITS card that records the sensor offset.
+const offsetKeyword = "OFFSET"
+
 // epsilon absorbs rounding in the header so that a -15.0 card matches a -15
 // target at zero tolerance.
 const epsilon = 1e-3
@@ -34,6 +37,10 @@ type checkOptions struct {
 	gain      float64
 	// gainSet reports whether --gain was supplied. Gain is checked only then.
 	gainSet bool
+	offset  float64
+	// offsetSet reports whether --offset was supplied. Offset is checked only
+	// then.
+	offsetSet bool
 }
 
 func newCheckCmd() *cobra.Command {
@@ -50,6 +57,10 @@ When --gain is given, the GAIN card is checked too and must equal the flag
 exactly; there is no tolerance for the gain. A file without a GAIN card is
 rejected and marked as missing.
 
+When --offset is given, the OFFSET card is checked the same way: it must equal
+the flag exactly, and a file without an OFFSET card is rejected and marked as
+missing.
+
 Only .fits, .fit and .fts files are considered; every other file and every
 hidden file is ignored. The report counts the compliant and rejected files and
 lists the rejected ones. The exit status is non-zero when any file is rejected
@@ -57,6 +68,7 @@ or unreadable.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.gainSet = cmd.Flags().Changed("gain")
+			opts.offsetSet = cmd.Flags().Changed("offset")
 			if err := opts.validate(); err != nil {
 				return err
 			}
@@ -73,6 +85,8 @@ or unreadable.`,
 		"allowed absolute deviation from --temp in degrees Celsius")
 	flags.Float64Var(&opts.gain, "gain", 0,
 		"compliant gain from the GAIN card; checked only when given")
+	flags.Float64Var(&opts.offset, "offset", 0,
+		"compliant offset from the OFFSET card; checked only when given")
 	_ = cmd.MarkFlagRequired("dir")
 	_ = cmd.MarkFlagRequired("temp")
 	return cmd
@@ -97,6 +111,9 @@ func (o *checkOptions) validate() error {
 	}
 	if o.gainSet && (math.IsNaN(o.gain) || math.IsInf(o.gain, 0)) {
 		return fmt.Errorf("--gain must be a finite number, got %v", o.gain)
+	}
+	if o.offsetSet && (math.IsNaN(o.offset) || math.IsInf(o.offset, 0)) {
+		return fmt.Errorf("--offset must be a finite number, got %v", o.offset)
 	}
 	return nil
 }
@@ -172,19 +189,32 @@ func (o *checkOptions) fileProblems(path string) ([]string, error) {
 		problems = append(problems, msg+")")
 	}
 
-	if !o.gainSet {
+	if o.gainSet {
+		gain, found, err := fitsheader.ReadFloat(path, gainKeyword)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			problems = append(problems, gainKeyword+" missing")
+		} else if gain != o.gain {
+			problems = append(problems,
+				fmt.Sprintf("%s=%s (want %s)", gainKeyword, formatFixed(gain), formatFixed(o.gain)))
+		}
+	}
+
+	if !o.offsetSet {
 		return problems, nil
 	}
 
-	gain, found, err := fitsheader.ReadFloat(path, gainKeyword)
+	offset, found, err := fitsheader.ReadFloat(path, offsetKeyword)
 	if err != nil {
 		return nil, err
 	}
 	if !found {
-		problems = append(problems, gainKeyword+" missing")
-	} else if gain != o.gain {
+		problems = append(problems, offsetKeyword+" missing")
+	} else if offset != o.offset {
 		problems = append(problems,
-			fmt.Sprintf("%s=%s (want %s)", gainKeyword, formatGain(gain), formatGain(o.gain)))
+			fmt.Sprintf("%s=%s (want %s)", offsetKeyword, formatFixed(offset), formatFixed(o.offset)))
 	}
 
 	return problems, nil
@@ -235,7 +265,7 @@ func formatTemp(v float64) string {
 	return fmt.Sprintf("%.2f", v)
 }
 
-func formatGain(v float64) string {
+func formatFixed(v float64) string {
 	return strconv.FormatFloat(v, 'g', -1, 64)
 }
 
