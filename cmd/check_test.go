@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -494,6 +495,34 @@ func TestCheckRejectFlag(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, rejectedDirName, "a.fits")); err != nil {
 		t.Fatalf("file was not moved by --reject: %v", err)
+	}
+}
+
+func TestCheckIgnoresRejectedDirs(t *testing.T) {
+	dir := t.TempDir()
+	good := writeFITS(t, dir, "a.fits", "CCD-TEMP=                -15.0")
+	rootRejected := writeFITS(t, dir, "rejected/b.fits", "CCD-TEMP=                -10.0")
+	nestedRejected := writeFITS(t, dir, "sub/rejected/c.fits", "CCD-TEMP=                -10.0")
+
+	for _, reject := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reject=%v", reject), func(t *testing.T) {
+			var out bytes.Buffer
+			err := runCheck(context.Background(), &out, &checkOptions{
+				dir: dir, temp: -15, reject: reject,
+			})
+			if err != nil {
+				t.Fatalf("runCheck(): %v\n%s", err, out.String())
+			}
+			if !strings.Contains(out.String(), "compliant: 1\n") ||
+				!strings.Contains(out.String(), "rejected:  0\n") {
+				t.Fatalf("files in rejected directories were scanned:\n%s", out.String())
+			}
+			for _, path := range []string{good, rootRejected, nestedRejected} {
+				if _, err := os.Stat(path); err != nil {
+					t.Errorf("%s should be untouched: %v", path, err)
+				}
+			}
+		})
 	}
 }
 

@@ -72,8 +72,9 @@ lists the rejected ones. The exit status is non-zero when any file is rejected
 or unreadable.
 
 With --reject, every rejected file is moved into the directory <dir>/rejected.
-Files already there are not scanned again. An existing file with the same name
-is never overwritten; the conflict is reported and the source stays in place.`,
+Any directory named rejected, at any depth, is always ignored by the scan. An
+existing file with the same name is never overwritten; the conflict is reported
+and the source stays in place.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.gainSet = cmd.Flags().Changed("gain")
@@ -142,11 +143,7 @@ type fileError struct {
 }
 
 func runCheck(ctx context.Context, out io.Writer, opts *checkOptions) error {
-	skipDir := ""
-	if opts.reject {
-		skipDir = opts.rejectDir()
-	}
-	paths, err := collectFITS(opts.dir, skipDir)
+	paths, err := collectFITS(opts.dir)
 	if err != nil {
 		return err
 	}
@@ -329,16 +326,16 @@ func formatTemp(v float64) string {
 }
 
 // collectFITS resolves root into a sorted list of FITS files. Directories are
-// walked recursively; hidden files and non-FITS extensions are skipped. When
-// skipDir is not empty its subtree is not visited.
-func collectFITS(root, skipDir string) ([]string, error) {
+// walked recursively; hidden files, non-FITS extensions and every directory
+// named rejected are skipped.
+func collectFITS(root string) ([]string, error) {
 	var paths []string
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if entry.IsDir() {
-			if skipDir != "" && filepath.Clean(path) == filepath.Clean(skipDir) {
+			if entry.Name() == rejectedDirName {
 				return filepath.SkipDir
 			}
 			return nil
