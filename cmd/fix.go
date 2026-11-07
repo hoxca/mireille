@@ -21,7 +21,7 @@ file to the exact value given by --temp.
 A file is compliant when its CCD-TEMP is within --tolerance of --temp and, when
 --gain or --offset is given, when those cards match their flags exactly. Files
 that are not compliant are left untouched and listed as rejected. A compliant
-file whose CCD-TEMP already equals --temp is counted as unchanged.
+file whose CCD-TEMP already equals --temp is counted as compliant.
 
 Only the 80-byte CCD-TEMP card is overwritten: the keyword, the comment and the
 pixel data are preserved, and the file size does not change. Any directory
@@ -51,7 +51,8 @@ func runFix(ctx context.Context, out io.Writer, opts *checkOptions) error {
 	}
 	slog.Debug("fixing directory", "dir", opts.dir, "files", len(paths))
 
-	var fixed, unchanged int
+	var fixed, compliant int
+	var rewrites []fixResult
 	var rejected []checkResult
 	var errs []fileError
 
@@ -85,8 +86,8 @@ func runFix(ctx context.Context, out io.Writer, opts *checkOptions) error {
 			continue
 		}
 		if temp == opts.temp {
-			unchanged++
-			slog.Debug("already correct", "path", path, "temp", temp)
+			compliant++
+			slog.Debug("already compliant", "path", path, "temp", temp)
 			continue
 		}
 
@@ -96,10 +97,11 @@ func runFix(ctx context.Context, out io.Writer, opts *checkOptions) error {
 			continue
 		}
 		fixed++
+		rewrites = append(rewrites, fixResult{path: path, from: temp, to: opts.temp})
 		slog.Debug("rewrote CCD-TEMP", "path", path, "from", temp, "to", opts.temp)
 	}
 
-	if err := printFixReport(out, fixed, unchanged, rejected, errs); err != nil {
+	if err := printFixReport(out, fixed, compliant, rewrites, rejected, errs); err != nil {
 		return err
 	}
 
@@ -109,11 +111,26 @@ func runFix(ctx context.Context, out io.Writer, opts *checkOptions) error {
 	return nil
 }
 
-func printFixReport(out io.Writer, fixed, unchanged int, rejected []checkResult, errs []fileError) error {
+// fixResult is one file whose CCD-TEMP was rewritten.
+type fixResult struct {
+	path string
+	from float64
+	to   float64
+}
+
+func printFixReport(out io.Writer, fixed, compliant int, rewrites []fixResult, rejected []checkResult, errs []fileError) error {
 	rw := &reportWriter{w: out}
 	rw.printf("fixed:     %d\n", fixed)
-	rw.printf("unchanged: %d\n", unchanged)
+	rw.printf("compliant: %d\n", compliant)
 	rw.printf("rejected:  %d\n", len(rejected))
+
+	if len(rewrites) > 0 {
+		rw.println("\nRewriting")
+		for _, r := range rewrites {
+			rw.printf("  %s  %s=%s (rewrite %s)\n",
+				r.path, tempKeyword, formatTemp(r.from), formatTemp(r.to))
+		}
+	}
 
 	printRejected(rw, rejected)
 	printErrors(rw, errs)

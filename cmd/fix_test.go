@@ -48,8 +48,11 @@ func TestFix(t *testing.T) {
 	report := out.String()
 	for _, want := range []string{
 		"fixed:     2\n",
-		"unchanged: 1\n",
+		"compliant: 1\n",
 		"rejected:  1\n",
+		"\nRewriting\n",
+		first + "  CCD-TEMP=0.05 (rewrite 0.00)\n",
+		second + "  CCD-TEMP=-0.08 (rewrite 0.00)\n",
 		rejected,
 	} {
 		if !strings.Contains(report, want) {
@@ -132,6 +135,9 @@ func TestFixIgnoresRejectedDirs(t *testing.T) {
 	}
 	if got != 0.05 {
 		t.Errorf("file under rejected/ was rewritten to %v", got)
+	}
+	if strings.Contains(out.String(), "Rewriting") {
+		t.Errorf("report has a Rewriting section with nothing rewritten:\n%s", out.String())
 	}
 }
 
