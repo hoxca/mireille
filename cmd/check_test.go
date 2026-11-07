@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -398,6 +399,101 @@ func TestCheckOffsetFlag(t *testing.T) {
 				t.Fatalf("Execute() = %v, want rejected=%v\n%s", err, tt.wantErr, out.String())
 			}
 		})
+	}
+}
+
+func TestCheckReject(t *testing.T) {
+	dir := t.TempDir()
+	good := writeFITS(t, dir, "a.fits", "CCD-TEMP=                -15.0")
+	bad := writeFITS(t, dir, "b.fits", "CCD-TEMP=                -10.0")
+	nested := writeFITS(t, dir, "nested/c.fits", "CCD-TEMP=                -10.0")
+
+	var out bytes.Buffer
+	err := runCheck(context.Background(), &out, &checkOptions{dir: dir, temp: -15, reject: true})
+	if !errors.Is(err, errRejected) {
+		t.Fatalf("runCheck() = %v, want errRejected\n%s", err, out.String())
+	}
+	if _, err := os.Stat(good); err != nil {
+		t.Errorf("compliant file was moved: %v", err)
+	}
+	for _, src := range []string{bad, nested} {
+		if _, err := os.Stat(src); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("rejected source %s still exists", src)
+		}
+	}
+	for _, name := range []string{"b.fits", "c.fits"} {
+		dest := filepath.Join(dir, rejectedDirName, name)
+		if _, err := os.Stat(dest); err != nil {
+			t.Errorf("expected rejected file at %s: %v", dest, err)
+		}
+	}
+
+	// The report still names the original paths.
+	if !strings.Contains(out.String(), bad) || !strings.Contains(out.String(), nested) {
+		t.Errorf("report does not show original rejected paths:\n%s", out.String())
+	}
+
+	// A second run skips rejected/ entirely.
+	if _, err := os.Stat(filepath.Join(dir, rejectedDirName, "b.fits")); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if err := runCheck(context.Background(), &out, &checkOptions{dir: dir, temp: -15, reject: true}); err != nil {
+		t.Fatalf("second run: %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "compliant: 1\n") || !strings.Contains(out.String(), "rejected:  0\n") {
+		t.Fatalf("second run re-scanned rejected files:\n%s", out.String())
+	}
+}
+
+func TestCheckRejectNoOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	src := writeFITS(t, dir, "b.fits", "CCD-TEMP=                -10.0")
+
+	destDir := filepath.Join(dir, rejectedDirName)
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(destDir, "b.fits")
+	if err := os.WriteFile(dest, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	err := runCheck(context.Background(), &out, &checkOptions{dir: dir, temp: -15, reject: true})
+	if !errors.Is(err, errRejected) {
+		t.Fatalf("runCheck() = %v, want errRejected\n%s", err, out.String())
+	}
+
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "keep" {
+		t.Errorf("destination was overwritten: %q", got)
+	}
+	if _, err := os.Stat(src); err != nil {
+		t.Errorf("source should stay in place: %v", err)
+	}
+	if !strings.Contains(out.String(), "already exists") {
+		t.Errorf("report does not mention the conflict:\n%s", out.String())
+	}
+}
+
+func TestCheckRejectFlag(t *testing.T) {
+	dir := t.TempDir()
+	writeFITS(t, dir, "a.fits", "CCD-TEMP=                -10.0")
+
+	cmd := newCheckCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--dir", dir, "--temp", "-15", "--reject"})
+
+	if err := cmd.Execute(); !errors.Is(err, errRejected) {
+		t.Fatalf("Execute() = %v, want errRejected\n%s", err, out.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, rejectedDirName, "a.fits")); err != nil {
+		t.Fatalf("file was not moved by --reject: %v", err)
 	}
 }
 

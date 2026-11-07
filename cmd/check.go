@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -29,6 +30,9 @@ const offsetKeyword = "OFFSET"
 // target at zero tolerance.
 const epsilon = 1e-3
 
+// rejectedDirName is the subdirectory of --dir that receives rejected files.
+const rejectedDirName = "rejected"
+
 type checkOptions struct {
 	dir       string
 	temp      float64
@@ -40,6 +44,8 @@ type checkOptions struct {
 	// offsetSet reports whether --offset was supplied. Offset is checked only
 	// then.
 	offsetSet bool
+	// reject moves every rejected file into <dir>/rejected.
+	reject bool
 }
 
 func newCheckCmd() *cobra.Command {
@@ -63,7 +69,11 @@ OFFSET card is rejected and marked as missing.
 Only .fits, .fit and .fts files are considered; every other file and every
 hidden file is ignored. The report counts the compliant and rejected files and
 lists the rejected ones. The exit status is non-zero when any file is rejected
-or unreadable.`,
+or unreadable.
+
+With --reject, every rejected file is moved into the directory <dir>/rejected.
+Files already there are not scanned again. An existing file with the same name
+is never overwritten; the conflict is reported and the source stays in place.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.gainSet = cmd.Flags().Changed("gain")
@@ -86,6 +96,8 @@ or unreadable.`,
 		"compliant non-negative integer gain from the GAIN card; checked only when given")
 	flags.IntVar(&opts.offset, "offset", 0,
 		"compliant non-negative integer offset from the OFFSET card; checked only when given")
+	flags.BoolVar(&opts.reject, "reject", false,
+		"move rejected files into <dir>/rejected")
 	_ = cmd.MarkFlagRequired("dir")
 	_ = cmd.MarkFlagRequired("temp")
 	return cmd
@@ -130,7 +142,11 @@ type fileError struct {
 }
 
 func runCheck(ctx context.Context, out io.Writer, opts *checkOptions) error {
-	paths, err := collectFITS(opts.dir)
+	skipDir := ""
+	if opts.reject {
+		skipDir = opts.rejectDir()
+	}
+	paths, err := collectFITS(opts.dir, skipDir)
 	if err != nil {
 		return err
 	}
@@ -157,6 +173,10 @@ func runCheck(ctx context.Context, out io.Writer, opts *checkOptions) error {
 			continue
 		}
 		rejected = append(rejected, checkResult{path: path, problems: problems})
+	}
+
+	if opts.reject {
+		errs = append(errs, opts.moveRejected(rejected)...)
 	}
 
 	if err := printReport(out, opts, compliant, rejected, errs); err != nil {
@@ -219,6 +239,50 @@ func (o *checkOptions) fileProblems(path string) ([]string, error) {
 	return problems, nil
 }
 
+// rejectDir is the directory that receives rejected files.
+func (o *checkOptions) rejectDir() string {
+	return filepath.Join(o.dir, rejectedDirName)
+}
+
+// moveRejected moves each rejected file into <dir>/rejected, flattening nested
+// paths. It never overwrites: a name already present in the destination is
+// reported and its source left in place.
+func (o *checkOptions) moveRejected(rejected []checkResult) []fileError {
+	if len(rejected) == 0 {
+		return nil
+	}
+
+	dir := o.rejectDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return []fileError{{path: dir, err: err}}
+	}
+
+	var errs []fileError
+	for _, r := range rejected {
+		dest := filepath.Join(dir, filepath.Base(r.path))
+
+		_, err := os.Stat(dest)
+		switch {
+		case err == nil:
+			errs = append(errs, fileError{
+				path: r.path,
+				err:  fmt.Errorf("not moved: %s already exists", dest),
+			})
+			continue
+		case !errors.Is(err, fs.ErrNotExist):
+			errs = append(errs, fileError{path: r.path, err: err})
+			continue
+		}
+
+		if err := os.Rename(r.path, dest); err != nil {
+			errs = append(errs, fileError{path: r.path, err: err})
+			continue
+		}
+		slog.Debug("moved rejected file", "from", r.path, "to", dest)
+	}
+	return errs
+}
+
 // reportWriter accumulates the first write error so the report can be built
 // with plain printf-style calls without ignoring their return values.
 type reportWriter struct {
@@ -265,14 +329,21 @@ func formatTemp(v float64) string {
 }
 
 // collectFITS resolves root into a sorted list of FITS files. Directories are
-// walked recursively; hidden files and non-FITS extensions are skipped.
-func collectFITS(root string) ([]string, error) {
+// walked recursively; hidden files and non-FITS extensions are skipped. When
+// skipDir is not empty its subtree is not visited.
+func collectFITS(root, skipDir string) ([]string, error) {
 	var paths []string
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if entry.IsDir() || !isFITS(path) {
+		if entry.IsDir() {
+			if skipDir != "" && filepath.Clean(path) == filepath.Clean(skipDir) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !isFITS(path) {
 			return nil
 		}
 		paths = append(paths, path)
