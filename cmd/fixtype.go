@@ -17,6 +17,7 @@ const typeKeyword = "IMAGETYP"
 const (
 	darkFrame = "Dark Frame"
 	flatField = "Flat Field"
+	biasFrame = "Bias Frame"
 )
 
 func newFixTypeCmd() *cobra.Command {
@@ -24,18 +25,19 @@ func newFixTypeCmd() *cobra.Command {
 		dir  string
 		dark bool
 		flat bool
+		bias bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "fixtype",
 		Short: "Rewrite the IMAGETYP card of every FITS file under a directory",
 		Long: `Walk --dir recursively and rewrite the IMAGETYP card of every FITS file to
-the image type selected by --dark or --flat.
+the image type selected by --dark, --flat or --bias.
 
---dark writes 'Dark Frame'; --flat writes 'Flat Field'. Exactly one of the two
-must be given. A file whose IMAGETYP already holds the requested value is
-counted as compliant. A file without an IMAGETYP card is reported as an error
-and left untouched.
+--dark writes 'Dark Frame', --flat writes 'Flat Field' and --bias writes
+'Bias Frame'. Exactly one of the three must be given. A file whose IMAGETYP
+already holds the requested value is counted as compliant. A file without an
+IMAGETYP card is reported as an error and left untouched.
 
 Only the 80-byte IMAGETYP card is overwritten: the keyword, the comment and the
 pixel data are preserved, and the file size does not change. Any directory
@@ -49,8 +51,11 @@ IMAGETYP card.`,
 				return err
 			}
 			value := darkFrame
-			if flat {
+			switch {
+			case flat:
 				value = flatField
+			case bias:
+				value = biasFrame
 			}
 			return runFixType(cmd.Context(), cmd.OutOrStdout(), dir, value)
 		},
@@ -61,9 +66,10 @@ IMAGETYP card.`,
 		"directory to scan recursively for FITS files")
 	flags.BoolVar(&dark, "dark", false, "rewrite IMAGETYP to 'Dark Frame'")
 	flags.BoolVar(&flat, "flat", false, "rewrite IMAGETYP to 'Flat Field'")
+	flags.BoolVar(&bias, "bias", false, "rewrite IMAGETYP to 'Bias Frame'")
 	_ = cmd.MarkFlagRequired("dir")
-	cmd.MarkFlagsOneRequired("dark", "flat")
-	cmd.MarkFlagsMutuallyExclusive("dark", "flat")
+	cmd.MarkFlagsOneRequired("dark", "flat", "bias")
+	cmd.MarkFlagsMutuallyExclusive("dark", "flat", "bias")
 	return cmd
 }
 
