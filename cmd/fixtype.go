@@ -15,29 +15,32 @@ const typeKeyword = "IMAGETYP"
 
 // Image types written by fixtype.
 const (
-	darkFrame = "Dark Frame"
-	flatField = "Flat Field"
-	biasFrame = "Bias Frame"
+	darkFrame  = "Dark Frame"
+	flatField  = "Flat Field"
+	biasFrame  = "Bias Frame"
+	lightFrame = "Light Frame"
 )
 
 func newFixTypeCmd() *cobra.Command {
 	var (
-		dir  string
-		dark bool
-		flat bool
-		bias bool
+		dir   string
+		dark  bool
+		flat  bool
+		bias  bool
+		light bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "fixtype",
 		Short: "Rewrite the IMAGETYP card of every FITS file under a directory",
 		Long: `Walk --dir recursively and rewrite the IMAGETYP card of every FITS file to
-the image type selected by --dark, --flat or --bias.
+the image type selected by --dark, --flat, --bias or --light.
 
---dark writes 'Dark Frame', --flat writes 'Flat Field' and --bias writes
-'Bias Frame'. Exactly one of the three must be given. A file whose IMAGETYP
-already holds the requested value is counted as compliant. A file without an
-IMAGETYP card is reported as an error and left untouched.
+--dark writes 'Dark Frame', --flat writes 'Flat Field', --bias writes
+'Bias Frame' and --light writes 'Light Frame'. Exactly one of the four must be
+given. A file whose IMAGETYP already holds the requested value is counted as
+compliant. A file without an IMAGETYP card is reported as an error and left
+untouched.
 
 Only the 80-byte IMAGETYP card is overwritten: the keyword, the comment and the
 pixel data are preserved, and the file size does not change. Any directory
@@ -56,6 +59,8 @@ IMAGETYP card.`,
 				value = flatField
 			case bias:
 				value = biasFrame
+			case light:
+				value = lightFrame
 			}
 			return runFixType(cmd.Context(), cmd.OutOrStdout(), dir, value)
 		},
@@ -67,9 +72,10 @@ IMAGETYP card.`,
 	flags.BoolVar(&dark, "dark", false, "rewrite IMAGETYP to 'Dark Frame'")
 	flags.BoolVar(&flat, "flat", false, "rewrite IMAGETYP to 'Flat Field'")
 	flags.BoolVar(&bias, "bias", false, "rewrite IMAGETYP to 'Bias Frame'")
+	flags.BoolVar(&light, "light", false, "rewrite IMAGETYP to 'Light Frame'")
 	_ = cmd.MarkFlagRequired("dir")
-	cmd.MarkFlagsOneRequired("dark", "flat", "bias")
-	cmd.MarkFlagsMutuallyExclusive("dark", "flat", "bias")
+	cmd.MarkFlagsOneRequired("dark", "flat", "bias", "light")
+	cmd.MarkFlagsMutuallyExclusive("dark", "flat", "bias", "light")
 	return cmd
 }
 
