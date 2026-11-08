@@ -110,15 +110,8 @@ func addCheckFlags(cmd *cobra.Command, opts *checkOptions) {
 }
 
 func (o *checkOptions) validate() error {
-	if o.dir == "" {
-		return fmt.Errorf("--dir must not be empty")
-	}
-	info, err := os.Stat(o.dir)
-	if err != nil {
-		return fmt.Errorf("--dir: %w", err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("--dir %s is not a directory", o.dir)
+	if err := validateDir(o.dir); err != nil {
+		return err
 	}
 	if math.IsNaN(o.temp) || math.IsInf(o.temp, 0) {
 		return fmt.Errorf("--temp must be a finite number, got %v", o.temp)
@@ -131,6 +124,21 @@ func (o *checkOptions) validate() error {
 	}
 	if o.offsetSet && o.offset < 0 {
 		return fmt.Errorf("--offset must be a non-negative integer, got %d", o.offset)
+	}
+	return nil
+}
+
+// validateDir checks that dir names an existing directory.
+func validateDir(dir string) error {
+	if dir == "" {
+		return fmt.Errorf("--dir must not be empty")
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("--dir: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("--dir %s is not a directory", dir)
 	}
 	return nil
 }

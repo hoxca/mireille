@@ -1,5 +1,5 @@
-// Package fitsheader reads cards from the primary header of a FITS file
-// without decoding its pixel data.
+// Package fitsheader reads and rewrites cards in the primary header of a FITS
+// file without decoding its pixel data.
 package fitsheader
 
 import (
@@ -23,9 +23,13 @@ func ReadFloat(path, keyword string) (value float64, found bool, err error) {
 		return 0, found, err
 	}
 
-	v, err := strconv.ParseFloat(raw, 64)
+	s, err := numericValue(keyword, raw)
 	if err != nil {
-		return 0, false, fmt.Errorf("%s: %q is not a number", keyword, raw)
+		return 0, false, err
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, false, fmt.Errorf("%s: %q is not a number", keyword, s)
 	}
 	return v, true, nil
 }
@@ -39,11 +43,53 @@ func ReadInt(path, keyword string) (value int, found bool, err error) {
 		return 0, found, err
 	}
 
-	v, err := strconv.Atoi(raw)
+	s, err := numericValue(keyword, raw)
 	if err != nil {
-		return 0, false, fmt.Errorf("%s: %q is not an integer", keyword, raw)
+		return 0, false, err
+	}
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, false, fmt.Errorf("%s: %q is not an integer", keyword, s)
 	}
 	return v, true, nil
+}
+
+// ReadString returns the value of the first string card named keyword in the
+// primary header of the FITS file at path. found is false when the header has
+// no such card.
+func ReadString(path, keyword string) (value string, found bool, err error) {
+	raw, found, err := readValue(path, keyword)
+	if err != nil || !found {
+		return "", found, err
+	}
+
+	v, err := stringValue(keyword, raw)
+	if err != nil {
+		return "", false, err
+	}
+	return v, true, nil
+}
+
+// WriteFloat rewrites the value of the first card named keyword in the primary
+// header of the FITS file at path. Only that 80-byte card is overwritten; the
+// keyword, the comment and any pixel data are left untouched. found is false
+// when the header has no such card.
+func WriteFloat(path, keyword string, value float64) (found bool, err error) {
+	s := strconv.FormatFloat(value, 'f', -1, 64)
+	return writeCard(path, keyword, func(card []byte) ([]byte, error) {
+		return replaceValueField(card, s, true)
+	})
+}
+
+// WriteString rewrites the string value of the first card named keyword in the
+// primary header of the FITS file at path. The value is quoted and
+// left-justified in the FITS value field; the comment is preserved. found is
+// false when the header has no such card.
+func WriteString(path, keyword, value string) (found bool, err error) {
+	s := "'" + strings.ReplaceAll(value, "'", "''") + "'"
+	return writeCard(path, keyword, func(card []byte) ([]byte, error) {
+		return replaceValueField(card, s, false)
+	})
 }
 
 // readValue returns the raw value field of the first card named keyword.
@@ -74,20 +120,16 @@ func readCard(r io.Reader, keyword string) (string, bool, error) {
 		if !strings.EqualFold(name, keyword) {
 			continue
 		}
-
-		raw, err := cardValue(card[:])
-		if err != nil {
-			return "", false, fmt.Errorf("%s: %w", keyword, err)
+		if card[8] != '=' {
+			return "", false, fmt.Errorf("%s: card has no value", keyword)
 		}
-		return raw, true, nil
+		return string(card[10:]), true, nil
 	}
 }
 
-// WriteFloat rewrites the value of the first card named keyword in the primary
-// header of the FITS file at path. Only that 80-byte card is overwritten; the
-// keyword, the comment and any pixel data are left untouched. found is false
-// when the header has no such card.
-func WriteFloat(path, keyword string, value float64) (found bool, err error) {
+// writeCard rewrites the first card named keyword using rewrite, which receives
+// the original 80-byte card and returns its replacement.
+func writeCard(path, keyword string, rewrite func([]byte) ([]byte, error)) (found bool, err error) {
 	f, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
 		return false, err
@@ -113,7 +155,7 @@ func WriteFloat(path, keyword string, value float64) (found bool, err error) {
 			continue
 		}
 
-		updated, err := rewriteCard(card[:], value)
+		updated, err := rewrite(card[:])
 		if err != nil {
 			return true, fmt.Errorf("%s: %w", keyword, err)
 		}
@@ -124,15 +166,12 @@ func WriteFloat(path, keyword string, value float64) (found bool, err error) {
 	}
 }
 
-// rewriteCard returns card with its value field replaced by value, keeping the
-// keyword, comment and padding in place. The value is right-justified in the
-// 20-byte FITS value field.
-func rewriteCard(card []byte, value float64) ([]byte, error) {
+// replaceValueField returns card with its value field replaced by s, keeping
+// the keyword, comment and padding in place.
+func replaceValueField(card []byte, s string, rightJustify bool) ([]byte, error) {
 	if card[8] != '=' {
 		return nil, fmt.Errorf("card has no value")
 	}
-
-	s := strconv.FormatFloat(value, 'f', -1, 64)
 	if len(s) > 20 {
 		return nil, fmt.Errorf("%q does not fit the value field", s)
 	}
@@ -143,30 +182,62 @@ func rewriteCard(card []byte, value float64) ([]byte, error) {
 	for i := 10; i < 30; i++ {
 		out[i] = ' '
 	}
-	copy(out[30-len(s):30], s)
+	if rightJustify {
+		copy(out[30-len(s):30], s)
+	} else {
+		copy(out[10:10+len(s)], s)
+	}
 
 	return out, nil
 }
 
-// cardValue extracts the value field of a card with the "= " indicator,
-// dropping the trailing comment and normalising FITS D exponents.
-func cardValue(card []byte) (string, error) {
-	if card[8] != '=' {
-		return "", fmt.Errorf("card has no value")
-	}
-
-	raw := string(card[10:])
+// numericValue extracts the numeric value from a raw value field, dropping the
+// trailing comment and normalising FITS D exponents.
+func numericValue(keyword, raw string) (string, error) {
 	if i := strings.IndexByte(raw, '/'); i >= 0 {
 		raw = raw[:i]
 	}
 	raw = strings.TrimSpace(raw)
 
 	if raw == "" {
-		return "", fmt.Errorf("card has an empty value")
+		return "", fmt.Errorf("%s: card has an empty value", keyword)
 	}
 	if raw[0] == '\'' {
-		return "", fmt.Errorf("value is a string, not a number")
+		return "", fmt.Errorf("%s: value is a string, not a number", keyword)
 	}
 
 	return strings.NewReplacer("D", "E", "d", "e").Replace(raw), nil
+}
+
+// stringValue extracts the quoted string from a raw value field, un-doubling
+// embedded quotes and trimming trailing blanks.
+func stringValue(keyword, raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", fmt.Errorf("%s: card has an empty value", keyword)
+	}
+	if raw[0] != '\'' {
+		return "", fmt.Errorf("%s: value is not a string", keyword)
+	}
+
+	var b strings.Builder
+	closed := false
+	for i := 1; i < len(raw); i++ {
+		if raw[i] != '\'' {
+			b.WriteByte(raw[i])
+			continue
+		}
+		if i+1 < len(raw) && raw[i+1] == '\'' {
+			b.WriteByte('\'')
+			i++
+			continue
+		}
+		closed = true
+		break
+	}
+	if !closed {
+		return "", fmt.Errorf("%s: unterminated string", keyword)
+	}
+
+	return strings.TrimRight(b.String(), " "), nil
 }

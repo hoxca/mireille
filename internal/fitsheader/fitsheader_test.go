@@ -1,6 +1,7 @@
 package fitsheader
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -219,6 +220,130 @@ func TestWriteFloatTooLong(t *testing.T) {
 	got, ok, err := ReadFloat(path, "CCD-TEMP")
 	if err != nil || !ok || got != 0.05 {
 		t.Fatalf("CCD-TEMP = %v, %v, %v, want unchanged 0.05", got, ok, err)
+	}
+}
+
+func TestReadString(t *testing.T) {
+	tests := []struct {
+		name    string
+		cards   []string
+		want    string
+		wantOk  bool
+		wantErr bool
+	}{
+		{
+			name:   "value with padding",
+			cards:  []string{fmt.Sprintf("IMAGETYP= %-20s / image type", "'Dark Frame'")},
+			want:   "Dark Frame",
+			wantOk: true,
+		},
+		{
+			name:   "doubled quote",
+			cards:  []string{"IMAGETYP= 'O''Brien'"},
+			want:   "O'Brien",
+			wantOk: true,
+		},
+		{
+			name:   "missing",
+			cards:  []string{"EXPTIME =                  600.0"},
+			wantOk: false,
+		},
+		{
+			name:    "numeric value",
+			cards:   []string{"IMAGETYP=                   100"},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeFITS(t, tt.cards, true)
+			got, ok, err := ReadString(path, "IMAGETYP")
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("ReadString() = %q, %v, want error", got, ok)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ReadString(): %v", err)
+			}
+			if ok != tt.wantOk {
+				t.Fatalf("found = %v, want %v", ok, tt.wantOk)
+			}
+			if ok && got != tt.want {
+				t.Fatalf("ReadString() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWriteString(t *testing.T) {
+	card := fmt.Sprintf("IMAGETYP= %-20s / image type", "'Bias Frame'")
+	path := writeFITS(t, []string{card, "EXPTIME =                 600.0"}, true)
+
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	found, err := WriteString(path, "IMAGETYP", "Dark Frame")
+	if err != nil {
+		t.Fatalf("WriteString(): %v", err)
+	}
+	if !found {
+		t.Fatal("WriteString() found = false")
+	}
+
+	got, ok, err := ReadString(path, "IMAGETYP")
+	if err != nil || !ok || got != "Dark Frame" {
+		t.Fatalf("IMAGETYP = %q, %v, %v, want Dark Frame", got, ok, err)
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before) != len(after) {
+		t.Fatalf("file size changed from %d to %d", len(before), len(after))
+	}
+
+	beforeCard := before[cardSize : 2*cardSize]
+	afterCard := after[cardSize : 2*cardSize]
+	if string(beforeCard[30:]) != string(afterCard[30:]) {
+		t.Errorf("comment/padding changed: %q -> %q", beforeCard[30:], afterCard[30:])
+	}
+	if string(afterCard[10:30]) != "'Dark Frame'        " {
+		t.Errorf("value field = %q, want left-justified string", afterCard[10:30])
+	}
+}
+
+func TestWriteStringEmbeddedQuote(t *testing.T) {
+	path := writeFITS(t, []string{"IMAGETYP= 'Bias Frame'"}, true)
+	if _, err := WriteString(path, "IMAGETYP", "O'Brien"); err != nil {
+		t.Fatalf("WriteString(): %v", err)
+	}
+	got, ok, err := ReadString(path, "IMAGETYP")
+	if err != nil || !ok || got != "O'Brien" {
+		t.Fatalf("IMAGETYP = %q, %v, %v, want O'Brien", got, ok, err)
+	}
+}
+
+func TestWriteStringMissing(t *testing.T) {
+	path := writeFITS(t, []string{"EXPTIME =                 600.0"}, true)
+	found, err := WriteString(path, "IMAGETYP", "Dark Frame")
+	if err != nil {
+		t.Fatalf("WriteString(): %v", err)
+	}
+	if found {
+		t.Fatal("WriteString() found = true for a missing card")
+	}
+}
+
+func TestWriteStringTooLong(t *testing.T) {
+	path := writeFITS(t, []string{"IMAGETYP= 'Bias Frame'"}, true)
+	if _, err := WriteString(path, "IMAGETYP", strings.Repeat("x", 19)); err == nil {
+		t.Fatal("WriteString() = nil error, want a value-field overflow error")
 	}
 }
 

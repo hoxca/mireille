@@ -64,6 +64,7 @@ exit status is non-zero when any file is rejected.`,
 
 	root.AddCommand(newCheckCmd())
 	root.AddCommand(newFixCmd())
+	root.AddCommand(newFixTypeCmd())
 	return root
 }
 
